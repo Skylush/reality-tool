@@ -1,4 +1,3 @@
-
 #!/usr/bin/env bash
 set -u
 
@@ -11,10 +10,11 @@ BACKUP_DIR="/root/netfix-backup-$(date +%Y%m%d-%H%M%S)"
 DNS_SERVERS="${DNS_SERVERS:-1.1.1.1 8.8.8.8 9.9.9.9 208.67.222.222}"
 TEST_DOMAINS="${TEST_DOMAINS:-google.com ip.sb deb.debian.org security.debian.org github.com raw.githubusercontent.com}"
 DRY_RUN=0
+FORCE=0
 
 usage() {
   cat <<EOF
-Usage: bash $0 [--dry-run] [--dns "1.1.1.1 8.8.8.8"]
+Usage: bash $0 [--dry-run] [--force] [--dns "1.1.1.1 8.8.8.8"]
 
 Environment:
   DNS_SERVERS="1.1.1.1 8.8.8.8 9.9.9.9"  Override DNS servers.
@@ -23,6 +23,7 @@ Environment:
 Examples:
   bash $0
   bash $0 --dry-run
+  bash $0 --force
   DNS_SERVERS="8.8.8.8 1.1.1.1" bash $0
 EOF
 }
@@ -30,6 +31,7 @@ EOF
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1 ;;
+    --force) FORCE=1 ;;
     --dns) shift; DNS_SERVERS="${1:-$DNS_SERVERS}" ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1"; usage; exit 1 ;;
@@ -101,6 +103,23 @@ dns_ok() {
     fi
   done
   return 1
+}
+
+resolved_manages_resolv_conf() {
+  [ -L /etc/resolv.conf ] || return 1
+  readlink -f /etc/resolv.conf 2>/dev/null | grep -q '^/run/systemd/resolve/'
+}
+
+resolved_has_uplink_dns() {
+  have resolvectl || return 1
+  resolvectl dns 2>/dev/null | grep -Eq '([0-9]{1,3}\.){3}[0-9]{1,3}|[0-9a-fA-F]{0,4}:[0-9a-fA-F:]+'
+}
+
+resolved_needs_persistent_fix() {
+  is_active systemd-resolved || return 1
+  resolved_manages_resolv_conf || return 1
+  resolved_has_uplink_dns && return 1
+  return 0
 }
 
 show_basic_info() {
@@ -280,6 +299,7 @@ main() {
   echo "OS: $OS_NAME"
   echo "DNS servers: $DNS_SERVERS"
   [ "$DRY_RUN" -eq 1 ] && echo "Mode: dry-run"
+  [ "$FORCE" -eq 1 ] && echo "Mode: force repair"
 
   show_basic_info
   show_tests
@@ -292,12 +312,26 @@ main() {
     echo "DNS repair may not help. Check IDC security group, gateway, route, NIC, or upstream block."
   fi
 
-  if dns_ok; then
+  REPAIR_REASON=""
+  if [ "$FORCE" -eq 1 ]; then
+    REPAIR_REASON="force repair requested"
+  elif ! dns_ok; then
+    REPAIR_REASON="DNS resolution failed"
+  elif resolved_needs_persistent_fix; then
+    REPAIR_REASON="systemd-resolved is active but has no persistent upstream DNS"
+  fi
+
+  if [ -z "$REPAIR_REASON" ]; then
     echo "DNS resolution: OK"
+    echo "Persistent DNS configuration: OK"
     echo "No DNS repair needed."
   else
-    echo "DNS resolution: FAILED"
-    echo "Applying DNS repair."
+    if dns_ok; then
+      echo "DNS resolution: OK"
+    else
+      echo "DNS resolution: FAILED"
+    fi
+    echo "Applying DNS repair: $REPAIR_REASON"
 
     if have systemctl && { is_active systemd-resolved || systemctl list-unit-files systemd-resolved.service >/dev/null 2>&1; }; then
       fix_with_resolved
