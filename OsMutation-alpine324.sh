@@ -78,19 +78,42 @@ function read_lxc_template(){
 
 # OpenVZ logic kept unchanged.
 function read_openvz_template(){
+    # Alpine 3.24 official minirootfs for x86_64.
+    # This is offered as an extra OpenVZ rootfs entry; the original
+    # OpenVZ template list below is kept unchanged.
+    if [ "$(uname -m)" == "x86_64" ]; then
+        alpine324_name="alpine-3.24-x86_64"
+        alpine324_url="https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/x86_64/alpine-minirootfs-3.24.0-x86_64.tar.gz"
+        echo "     1  ${alpine324_name}"
+        alpine324_offset=1
+    else
+        alpine324_offset=0
+    fi
+
     releasetag="v0.0.1"
     os_list=$(wget -qO- "https://github.com/LloydAsp/OsMutation/releases/expanded_assets/v0.0.1" | \
         sed -nE '/tar.gz/s/.*>([^<>]+)\.tar\.gz.*/\1/p' | \
         grep -E "(debian)|(centos)|(alpine)" )
-    echo "$os_list" | nl
+    if [ "$alpine324_offset" -eq 1 ]; then
+        echo "$os_list" | nl -v 2
+    else
+        echo "$os_list" | nl
+    fi
     while [ -z "${os_index##*[!0-9]*}" ];
     do
         echo -n "please select os (input number):"
         read os_index < /dev/tty
     done
 
-    os_selected=$( echo "$os_list" | head -n $os_index | tail -n 1)
-    download_link="https://github.com/LloydAsp/OsMutation/releases/download/${releasetag}/${os_selected}.tar.gz"
+    if [ "$alpine324_offset" -eq 1 ] && [ "$os_index" -eq 1 ]; then
+        os_selected="$alpine324_name"
+        download_link="$alpine324_url"
+    else
+        old_index="$os_index"
+        [ "$alpine324_offset" -eq 1 ] && old_index=$((os_index - 1))
+        os_selected=$( echo "$os_list" | head -n "$old_index" | tail -n 1)
+        download_link="https://github.com/LloydAsp/OsMutation/releases/download/${releasetag}/${os_selected}.tar.gz"
+    fi
 }
 
 function download_rootfs(){
@@ -99,7 +122,7 @@ function download_rootfs(){
     if [ "$cttype" == 'lxc' ] ; then
         wget -6 -qO- "$download_link" | tar -C /x -xJv
     elif [ "$cttype" == 'openvz' ] ; then
-        wget -qO- "$download_link" | tar -C /x -xzv
+        wget -6 -qO- "$download_link" | tar -C /x -xzv
     elif [ "$cttype" == 'kvm' ] ; then
         echo "kvm is not supported by this script"
         exit 1
